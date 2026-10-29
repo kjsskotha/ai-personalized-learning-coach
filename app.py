@@ -8,9 +8,9 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# --------------------------------------------------
+# ==================================================
 # CONFIGURATION
-# --------------------------------------------------
+# ==================================================
 
 load_dotenv()
 
@@ -24,8 +24,9 @@ DB_NAME = "learning_coach.db"
 
 
 def get_config(name, default=None):
-    """Read configuration from environment variables or Streamlit Secrets."""
+    """Read settings from environment variables or Streamlit Cloud Secrets."""
     value = os.getenv(name)
+
     if value:
         return value
 
@@ -40,8 +41,8 @@ def get_ai_client():
 
     if not api_key:
         raise ValueError(
-            "Groq API key is missing. Add GROQ_API_KEY to your local .env "
-            "file or Streamlit Cloud Secrets."
+            "GROQ_API_KEY is missing. Add it to your local .env file "
+            "or Streamlit Cloud Secrets."
         )
 
     return OpenAI(
@@ -60,8 +61,8 @@ def ask_ai(prompt):
             {
                 "role": "system",
                 "content": (
-                    "You are a helpful AI Personalized Learning Coach. "
-                    "Give accurate, beginner-friendly educational content. "
+                    "You are an educational AI learning coach. "
+                    "Create clear, accurate, beginner-friendly learning content. "
                     "When JSON is requested, return valid JSON only."
                 )
             },
@@ -70,16 +71,16 @@ def ask_ai(prompt):
         temperature=0.4
     )
 
-    content = response.choices[0].message.content
+    result = response.choices[0].message.content
 
-    if not content:
+    if not result:
         raise ValueError("The AI returned an empty response.")
 
-    return content.strip()
+    return result.strip()
 
 
 def extract_json(text):
-    """Extract JSON if the AI wraps its response in Markdown."""
+    """Extract JSON from an AI response."""
     text = text.strip()
 
     if text.startswith("```"):
@@ -94,14 +95,14 @@ def extract_json(text):
     end = text.rfind("}")
 
     if start == -1 or end == -1:
-        raise ValueError("The AI response did not contain valid JSON.")
+        raise ValueError("The AI response did not contain JSON.")
 
     return json.loads(text[start:end + 1])
 
 
-# --------------------------------------------------
+# ==================================================
 # DATABASE
-# --------------------------------------------------
+# ==================================================
 
 def get_connection():
     return sqlite3.connect(DB_NAME)
@@ -149,10 +150,6 @@ def initialize_database():
 
 initialize_database()
 
-
-# --------------------------------------------------
-# DATABASE FUNCTIONS
-# --------------------------------------------------
 
 def save_profile(name, subject, goal, level, days, minutes):
     with get_connection() as conn:
@@ -227,9 +224,9 @@ def load_attempts(profile_id):
         """, (profile_id,)).fetchall()
 
 
-# --------------------------------------------------
+# ==================================================
 # AI STUDY PLAN
-# --------------------------------------------------
+# ==================================================
 
 def generate_study_plan(profile):
     prompt = f"""
@@ -239,10 +236,10 @@ Learner name: {profile['name']}
 Subject: {profile['subject']}
 Learning goal: {profile['goal']}
 Current level: {profile['level']}
-Number of days: {profile['days']}
+Duration: {profile['days']} days
 Daily study time: {profile['minutes']} minutes
 
-Return this JSON structure:
+Return exactly this JSON structure:
 {{
   "overview": "Short description of the plan",
   "days": [
@@ -251,36 +248,36 @@ Return this JSON structure:
       "topic": "Topic name",
       "objectives": ["Objective 1", "Objective 2"],
       "activities": ["Activity 1", "Activity 2"],
-      "practice_task": "A task the learner should complete",
-      "revision": "A short revision activity"
+      "practice_task": "A practical learning task",
+      "revision": "A revision activity"
     }}
   ]
 }}
 
 Requirements:
 - Create exactly {profile['days']} day entries.
-- Progress from basic to more advanced concepts.
+- Progress from basic concepts to more advanced concepts.
 - Keep the workload realistic for the daily time available.
-- Use clear, beginner-friendly language.
-- Make the plan relevant to the stated goal.
+- Use simple, beginner-friendly language.
+- Align the plan with the learner's goal.
 - Return valid JSON only.
 """
 
-    data = extract_json(ask_ai(prompt))
+    plan = extract_json(ask_ai(prompt))
 
-    if not isinstance(data.get("days"), list) or not data["days"]:
-        raise ValueError("The AI did not return a usable day-wise plan.")
+    if not isinstance(plan.get("days"), list) or not plan["days"]:
+        raise ValueError("The AI did not return a valid day-wise plan.")
 
-    return data
+    return plan
 
 
-# --------------------------------------------------
+# ==================================================
 # AI QUIZ
-# --------------------------------------------------
+# ==================================================
 
 def generate_quiz(subject, topic, level):
     prompt = f"""
-Create exactly 5 multiple-choice questions.
+Create exactly five multiple-choice questions.
 
 Subject: {subject}
 Topic: {topic}
@@ -298,19 +295,19 @@ Return valid JSON only in this format:
         "D": "Option D"
       }},
       "answer": "A",
-      "explanation": "Explain why the correct answer is right",
+      "explanation": "Explain the correct answer",
       "topic": "Specific concept being tested"
     }}
   ]
 }}
 
 Rules:
-- Each answer must be exactly A, B, C, or D.
-- Include four different options per question.
-- Only one option should be correct.
-- Keep questions relevant to the subject and topic.
-- Use clear language suitable for the learner's level.
-- Return exactly 5 questions.
+- Create exactly five questions.
+- Each question must have four distinct options.
+- The answer must be A, B, C, or D.
+- There must be only one correct answer per question.
+- Include a useful explanation for every answer.
+- Keep questions relevant to the requested topic and level.
 - Return valid JSON only.
 """
 
@@ -318,22 +315,33 @@ Rules:
     questions = data.get("questions", [])
 
     if len(questions) != 5:
-        raise ValueError("The AI did not generate exactly 5 questions.")
+        raise ValueError("The AI did not generate exactly five questions.")
 
     for question in questions:
+        options = question.get("options", {})
+
         if (
-            not isinstance(question.get("options"), dict)
-            or not all(k in question["options"] for k in ["A", "B", "C", "D"])
+            not isinstance(options, dict)
+            or not all(key in options for key in ["A", "B", "C", "D"])
             or question.get("answer") not in ["A", "B", "C", "D"]
         ):
-            raise ValueError("The AI returned an incorrectly formatted quiz.")
+            raise ValueError("The AI returned an invalid quiz format.")
 
     return questions
 
 
-# --------------------------------------------------
+# ==================================================
+# NAVIGATION CALLBACK — FIX FOR RED BUTTON
+# ==================================================
+
+def go_to_quiz():
+    """Navigate to the Practice Quiz page before Streamlit reruns."""
+    st.session_state["navigation_page"] = "📝 Practice Quiz"
+
+
+# ==================================================
 # SESSION STATE
-# --------------------------------------------------
+# ==================================================
 
 if "profile_id" not in st.session_state:
     st.session_state.profile_id = None
@@ -357,9 +365,9 @@ if "quiz_result" not in st.session_state:
     st.session_state.quiz_result = None
 
 
-# --------------------------------------------------
+# ==================================================
 # SIDEBAR
-# --------------------------------------------------
+# ==================================================
 
 st.sidebar.title("🎓 Learning Coach")
 st.sidebar.caption("Your personal AI-powered study companion")
@@ -370,7 +378,8 @@ page = st.sidebar.radio(
         "🏠 Home & Study Plan",
         "📝 Practice Quiz",
         "📊 Progress Dashboard"
-    ]
+    ],
+    key="navigation_page"
 )
 
 st.sidebar.divider()
@@ -383,21 +392,25 @@ else:
     st.sidebar.info("Create a learner profile to get started.")
 
 
-# --------------------------------------------------
+# ==================================================
 # HOME AND STUDY PLAN
-# --------------------------------------------------
+# ==================================================
 
 if page == "🏠 Home & Study Plan":
     st.title("🎓 AI Personalized Learning Coach")
+
     st.write(
         "Create a personalized study plan, practise quizzes, "
         "understand your mistakes, and track your learning progress."
     )
 
-    st.subheader("1. Set up your learning profile")
+    st.subheader("1. Set Up Your Learning Profile")
 
     with st.form("profile_form"):
-        name = st.text_input("Learner name", placeholder="Enter your name")
+        name = st.text_input(
+            "Learner name",
+            placeholder="Enter your name"
+        )
 
         subject = st.text_input(
             "Subject",
@@ -478,8 +491,8 @@ if page == "🏠 Home & Study Plan":
                 except Exception as error:
                     st.error(f"Could not generate the study plan: {error}")
                     st.info(
-                        "Check your API key, internet connection, and model "
-                        "availability, then try again."
+                        "Check your Groq API key, internet connection, "
+                        "and model availability, then try again."
                     )
 
     if st.session_state.current_plan:
@@ -487,32 +500,39 @@ if page == "🏠 Home & Study Plan":
         plan = st.session_state.current_plan
 
         st.divider()
-        st.subheader("2. Your personalized learning plan")
+        st.subheader("2. Your Personalized Learning Plan")
 
         st.write(f"**Learner:** {profile['name']}")
         st.write(f"**Subject:** {profile['subject']}")
         st.write(f"**Goal:** {profile['goal']}")
         st.write(f"**Level:** {profile['level']}")
+
         st.info(plan.get("overview", "Your learning journey starts here."))
 
         for day_item in plan.get("days", []):
             day_number = day_item.get("day", "?")
-            topic = day_item.get("topic", "Study topic")
+            topic_name = day_item.get("topic", "Study topic")
 
-            with st.expander(f"Day {day_number}: {topic}"):
+            with st.expander(f"Day {day_number}: {topic_name}"):
                 st.markdown("**Learning objectives**")
+
                 for objective in day_item.get("objectives", []):
                     st.write(f"- {objective}")
 
                 st.markdown("**Activities**")
+
                 for activity in day_item.get("activities", []):
                     st.write(f"- {activity}")
 
                 st.markdown("**Practice task**")
-                st.write(day_item.get("practice_task", "Review the topic."))
+                st.write(
+                    day_item.get("practice_task", "Review the topic.")
+                )
 
                 st.markdown("**Revision**")
-                st.write(day_item.get("revision", "Revise today's concepts."))
+                st.write(
+                    day_item.get("revision", "Revise today's concepts.")
+                )
 
         st.download_button(
             "Download Study Plan (JSON)",
@@ -521,26 +541,31 @@ if page == "🏠 Home & Study Plan":
             mime="application/json"
         )
 
-        if st.button("Start a Practice Quiz", type="primary"):
-            st.session_state["navigate_to_quiz"] = True
-            st.rerun()
+        # FIX: callback updates navigation before the next rerun.
+        st.button(
+            "Start a Practice Quiz",
+            type="primary",
+            on_click=go_to_quiz
+        )
 
 
-# --------------------------------------------------
+# ==================================================
 # PRACTICE QUIZ
-# --------------------------------------------------
+# ==================================================
 
 elif page == "📝 Practice Quiz":
     st.title("📝 Topic-Based Practice Quiz")
+
     st.write(
         "Answer five multiple-choice questions. Your score is calculated "
-        "in Python using the answer key, and you will receive explanations."
+        "in Python using the answer key, with explanations for your answers."
     )
 
     if not st.session_state.profile:
         st.warning(
             "Please create a learner profile and study plan on the Home page first."
         )
+
     else:
         profile = st.session_state.profile
 
@@ -555,7 +580,7 @@ elif page == "📝 Practice Quiz":
 
         if st.button("Generate 5 Questions", type="primary"):
             if not topic.strip():
-                st.warning("Enter a topic first.")
+                st.warning("Please enter a topic first.")
             else:
                 with st.spinner("Preparing your quiz..."):
                     try:
@@ -586,8 +611,7 @@ elif page == "📝 Practice Quiz":
 
                     for index, question in enumerate(questions):
                         st.markdown(
-                            f"**Question {index + 1}: "
-                            f"{question['question']}**"
+                            f"**Question {index + 1}: {question['question']}**"
                         )
 
                         options = question["options"]
@@ -614,7 +638,7 @@ elif page == "📝 Practice Quiz":
                     wrong_topics = []
                     results = []
 
-                    # Score is calculated locally in Python.
+                    # Scoring is performed by Python, not by the AI.
                     for index, question in enumerate(questions):
                         selected = answers[index]
                         correct = question["answer"]
@@ -624,7 +648,10 @@ elif page == "📝 Practice Quiz":
                             score += 1
                         else:
                             wrong_topics.append(
-                                question.get("topic", st.session_state.quiz_topic)
+                                question.get(
+                                    "topic",
+                                    st.session_state.quiz_topic
+                                )
                             )
 
                         results.append({
@@ -638,7 +665,8 @@ elif page == "📝 Practice Quiz":
                                 "Review the correct answer and practise again."
                             ),
                             "topic": question.get(
-                                "topic", st.session_state.quiz_topic
+                                "topic",
+                                st.session_state.quiz_topic
                             )
                         })
 
@@ -661,10 +689,14 @@ elif page == "📝 Practice Quiz":
                     st.session_state.quiz_submitted = True
                     st.rerun()
 
-            if st.session_state.quiz_submitted and st.session_state.quiz_result:
+            if (
+                st.session_state.quiz_submitted
+                and st.session_state.quiz_result
+            ):
                 result = st.session_state.quiz_result
                 score = result["score"]
                 total = result["total"]
+
                 percentage = round((score / total) * 100) if total else 0
 
                 st.subheader("Your Quiz Results")
@@ -673,28 +705,36 @@ elif page == "📝 Practice Quiz":
                 st.write(f"**Accuracy:** {percentage}%")
 
                 if percentage >= 80:
-                    st.success("Excellent work! Keep practising to retain your knowledge.")
+                    st.success(
+                        "Excellent work! Keep practising to retain your knowledge."
+                    )
                 elif percentage >= 50:
-                    st.info("Good effort! Review the explanations and practise again.")
+                    st.info(
+                        "Good effort! Review the explanations and practise again."
+                    )
                 else:
-                    st.warning("Spend more time reviewing this topic before retrying.")
+                    st.warning(
+                        "Review this topic and try another quiz after revision."
+                    )
 
                 st.subheader("Answer Review")
 
                 for index, item in enumerate(result["results"]):
-                    with st.expander(
-                        f"Question {index + 1}: "
-                        f"{'Correct' if item['is_correct'] else 'Needs review'}"
-                    ):
+                    status = "Correct" if item["is_correct"] else "Needs review"
+
+                    with st.expander(f"Question {index + 1}: {status}"):
                         st.write(item["question"])
+
                         st.write(
                             f"**Your answer:** {item['selected']}. "
                             f"{item['options'][item['selected']]}"
                         )
+
                         st.write(
                             f"**Correct answer:** {item['correct']}. "
                             f"{item['options'][item['correct']]}"
                         )
+
                         st.write(f"**Explanation:** {item['explanation']}")
                         st.write(f"**Concept:** {item['topic']}")
 
@@ -702,17 +742,20 @@ elif page == "📝 Practice Quiz":
 
                 if result["wrong_topics"]:
                     weak_topics = sorted(set(result["wrong_topics"]))
+
                     st.write("Review these concepts:")
+
                     for weak_topic in weak_topics:
                         st.write(f"- {weak_topic}")
+
                     st.write(
                         "Revisit these concepts in your study plan and take "
                         "another quiz after revision."
                     )
                 else:
                     st.success(
-                        "You answered every question correctly. Try a more "
-                        "advanced topic to challenge yourself."
+                        "You answered every question correctly. "
+                        "Try a more advanced topic next."
                     )
 
                 if st.button("Try Another Quiz"):
@@ -722,21 +765,24 @@ elif page == "📝 Practice Quiz":
                     st.rerun()
 
 
-# --------------------------------------------------
+# ==================================================
 # PROGRESS DASHBOARD
-# --------------------------------------------------
+# ==================================================
 
 elif page == "📊 Progress Dashboard":
     st.title("📊 Learning Progress Dashboard")
-    st.write("Review your saved learning plans and quiz performance.")
+
+    st.write(
+        "Review your saved learning plans, quiz scores, and progress history."
+    )
 
     profiles = load_profiles()
 
     if not profiles:
         st.info(
-            "No learner profiles found yet. Create your first study plan "
-            "on the Home page."
+            "No learner profiles found yet. Create a study plan on the Home page."
         )
+
     else:
         profile_options = {
             f"{row[1]} — {row[2]} (Profile {row[0]})": row[0]
@@ -755,6 +801,7 @@ elif page == "📊 Progress Dashboard":
         )
 
         st.subheader("Learner Information")
+
         col1, col2, col3 = st.columns(3)
 
         col1.metric("Subject", selected_profile[2])
@@ -773,16 +820,24 @@ elif page == "📊 Progress Dashboard":
                 with st.expander(f"Plan created: {created_at}"):
                     try:
                         saved_plan = json.loads(plan_json)
-                        st.write(saved_plan.get("overview", "Study plan"))
+
+                        st.write(
+                            saved_plan.get("overview", "Saved study plan")
+                        )
 
                         for day_item in saved_plan.get("days", []):
                             st.markdown(
                                 f"**Day {day_item.get('day', '?')}: "
                                 f"{day_item.get('topic', 'Topic')}**"
                             )
+
                             st.write(
-                                day_item.get("practice_task", "Review the topic.")
+                                day_item.get(
+                                    "practice_task",
+                                    "Review the topic."
+                                )
                             )
+
                     except (json.JSONDecodeError, TypeError):
                         st.warning("This saved plan could not be displayed.")
         else:
@@ -796,12 +851,14 @@ elif page == "📊 Progress Dashboard":
             total_quizzes = len(attempts)
             total_questions = sum(row[3] for row in attempts)
             total_correct = sum(row[2] for row in attempts)
+
             accuracy = (
                 round((total_correct / total_questions) * 100)
                 if total_questions else 0
             )
 
             col1, col2, col3 = st.columns(3)
+
             col1.metric("Quizzes Completed", total_quizzes)
             col2.metric("Questions Answered", total_questions)
             col3.metric("Overall Accuracy", f"{accuracy}%")
@@ -810,16 +867,29 @@ elif page == "📊 Progress Dashboard":
 
             st.markdown("### Attempt History")
 
-            for subject_name, topic_name, score, total, wrong_json, created_at in attempts:
+            for (
+                subject_name,
+                topic_name,
+                score,
+                total,
+                wrong_json,
+                created_at
+            ) in attempts:
+
                 with st.expander(
                     f"{topic_name} — {score}/{total} ({created_at})"
                 ):
-                    wrong_topics = json.loads(wrong_json)
                     st.write(f"**Subject:** {subject_name}")
                     st.write(f"**Score:** {score}/{total}")
 
+                    try:
+                        wrong_topics = json.loads(wrong_json)
+                    except (json.JSONDecodeError, TypeError):
+                        wrong_topics = []
+
                     if wrong_topics:
                         st.write("**Concepts to review:**")
+
                         for weak_topic in sorted(set(wrong_topics)):
                             st.write(f"- {weak_topic}")
                     else:
@@ -828,13 +898,15 @@ elif page == "📊 Progress Dashboard":
             chart_rows = [
                 {
                     "Quiz": f"{row[1]} ({index + 1})",
-                    "Accuracy (%)": round((row[2] / row[3]) * 100)
-                    if row[3] else 0
+                    "Accuracy (%)": (
+                        round((row[2] / row[3]) * 100) if row[3] else 0
+                    )
                 }
                 for index, row in enumerate(reversed(attempts))
             ]
 
             st.markdown("### Quiz Accuracy Over Time")
+
             st.line_chart(
                 chart_rows,
                 x="Quiz",
@@ -843,20 +915,22 @@ elif page == "📊 Progress Dashboard":
 
         else:
             st.info(
-                "Complete a practice quiz to see your score, accuracy, "
+                "Complete a practice quiz to see your scores, accuracy, "
                 "and progress history here."
             )
 
 
-# --------------------------------------------------
+# ==================================================
 # FOOTER
-# --------------------------------------------------
+# ==================================================
 
 st.divider()
+
 st.caption(
     "AI Personalized Learning Coach | Python • Streamlit • Groq API • SQLite"
 )
+
 st.caption(
     "AI-generated educational content may contain errors. "
-    "Review important information and use the quiz feedback as a learning aid."
+    "Review important information and use quiz feedback as a learning aid."
 )
