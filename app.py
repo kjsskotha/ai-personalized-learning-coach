@@ -7,9 +7,10 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
+
+# =========================================================
+# 1. CONFIGURATION
+# =========================================================
 
 load_dotenv()
 
@@ -20,13 +21,15 @@ st.set_page_config(
 )
 
 DB_NAME = "learning_coach.db"
-MODEL_NAME = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+DEFAULT_MODEL = "openai/gpt-oss-120b"
 
 
-def get_config(name, default=None):
+def get_secret(name, default=None):
     value = os.getenv(name)
+
     if value:
         return value
+
     try:
         return st.secrets.get(name, default)
     except Exception:
@@ -34,12 +37,13 @@ def get_config(name, default=None):
 
 
 def get_ai_client():
-    api_key = get_config("GROQ_API_KEY")
+    api_key = get_secret("GROQ_API_KEY")
+
     if not api_key:
         raise ValueError(
-            "GROQ_API_KEY is missing. Add it to your local .env file "
-            "or Streamlit Community Cloud Secrets."
+            "GROQ_API_KEY is missing. Add it in Streamlit Secrets."
         )
+
     return OpenAI(
         api_key=api_key,
         base_url="https://api.groq.com/openai/v1"
@@ -48,7 +52,9 @@ def get_ai_client():
 
 def ask_ai(prompt):
     client = get_ai_client()
-    model = get_config("GROQ_MODEL", MODEL_NAME)
+
+    model = get_secret("GROQ_MODEL", DEFAULT_MODEL)
+
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -56,43 +62,52 @@ def ask_ai(prompt):
                 "role": "system",
                 "content": (
                     "You are an educational AI learning coach. "
-                    "Create accurate, clear, level-appropriate learning content. "
-                    "When JSON is requested, return valid JSON only, without markdown."
+                    "Create clear, accurate, beginner-friendly "
+                    "learning content. Return valid JSON when requested."
                 )
             },
-            {"role": "user", "content": prompt}
+            {
+                "role": "user",
+                "content": prompt
+            }
         ],
         temperature=0.3
     )
-    content = response.choices[0].message.content
-    if not content or not content.strip():
+
+    result = response.choices[0].message.content
+
+    if not result:
         raise ValueError("The AI returned an empty response.")
-    return content.strip()
+
+    return result.strip()
 
 
-def extract_json(raw_text):
-    text = raw_text.strip()
+def extract_json(text):
+    text = text.strip()
+
     if text.startswith("```"):
         lines = text.splitlines()
+
         if lines and lines[0].startswith("```"):
             lines = lines[1:]
-        if lines and lines[-1].strip().startswith("```"):
+
+        if lines and lines[-1].startswith("```"):
             lines = lines[:-1]
+
         text = "\n".join(lines).strip()
 
     start = text.find("{")
     end = text.rfind("}")
-    if start < 0 or end < start:
-        raise ValueError("The AI response did not contain valid JSON.")
-    try:
-        return json.loads(text[start:end + 1])
-    except json.JSONDecodeError as exc:
-        raise ValueError("The AI returned incorrectly formatted JSON. Please retry.") from exc
+
+    if start == -1 or end == -1:
+        raise ValueError("Invalid JSON response from AI.")
+
+    return json.loads(text[start:end + 1])
 
 
-# ============================================================
-# DATABASE AND SAFE DATABASE OPERATIONS
-# ============================================================
+# =========================================================
+# 2. DATABASE
+# =========================================================
 
 def get_connection():
     connection = sqlite3.connect(DB_NAME, timeout=20)
@@ -101,246 +116,238 @@ def get_connection():
 
 
 def initialize_database():
-    try:
-        with get_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS learner_profiles (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    learner_name TEXT NOT NULL,
-                    subject TEXT NOT NULL,
-                    learning_goal TEXT NOT NULL,
-                    skill_level TEXT NOT NULL,
-                    target_days INTEGER NOT NULL,
-                    daily_minutes INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS learning_plans (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    profile_id INTEGER NOT NULL,
-                    plan_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(profile_id) REFERENCES learner_profiles(id)
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS quiz_attempts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    profile_id INTEGER NOT NULL,
-                    subject TEXT NOT NULL,
-                    topic TEXT NOT NULL,
-                    score INTEGER NOT NULL,
-                    total_questions INTEGER NOT NULL,
-                    wrong_topics TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    FOREIGN KEY(profile_id) REFERENCES learner_profiles(id)
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS topic_progress (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    profile_id INTEGER NOT NULL,
-                    topic TEXT NOT NULL,
-                    status TEXT NOT NULL DEFAULT 'Pending',
-                    last_score INTEGER,
-                    total_questions INTEGER,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(profile_id, topic),
-                    FOREIGN KEY(profile_id) REFERENCES learner_profiles(id)
-                )
-            """)
-    except sqlite3.Error as exc:
-        st.error(f"Database setup failed: {exc}")
-        st.stop()
+    with get_connection() as conn:
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                goal TEXT NOT NULL,
+                level TEXT NOT NULL,
+                days INTEGER NOT NULL,
+                daily_minutes INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS plans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL,
+                plan_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(profile_id) REFERENCES profiles(id)
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS quiz_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL,
+                subject TEXT NOT NULL,
+                topic TEXT NOT NULL,
+                score INTEGER NOT NULL,
+                total INTEGER NOT NULL,
+                wrong_topics TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(profile_id) REFERENCES profiles(id)
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS topic_progress (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER NOT NULL,
+                topic TEXT NOT NULL,
+                status TEXT NOT NULL,
+                score INTEGER,
+                total INTEGER,
+                updated_at TEXT NOT NULL,
+                UNIQUE(profile_id, topic),
+                FOREIGN KEY(profile_id) REFERENCES profiles(id)
+            )
+        """)
 
 
-def save_profile(name, subject, goal, level, days, minutes):
+def save_profile(profile):
     with get_connection() as conn:
         cursor = conn.execute("""
-            INSERT INTO learner_profiles
-            (learner_name, subject, learning_goal, skill_level,
-             target_days, daily_minutes, created_at)
+            INSERT INTO profiles
+            (name, subject, goal, level, days, daily_minutes, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
-            name, subject, goal, level, days, minutes,
+            profile["name"],
+            profile["subject"],
+            profile["goal"],
+            profile["level"],
+            profile["days"],
+            profile["minutes"],
             datetime.now().isoformat(timespec="seconds")
         ))
+
         return cursor.lastrowid
 
 
 def update_profile(profile_id, profile):
     with get_connection() as conn:
         conn.execute("""
-            UPDATE learner_profiles
-            SET learner_name=?, subject=?, learning_goal=?, skill_level=?,
-                target_days=?, daily_minutes=?
+            UPDATE profiles
+            SET name=?, subject=?, goal=?, level=?, days=?, daily_minutes=?
             WHERE id=?
         """, (
-            profile["name"], profile["subject"], profile["goal"],
-            profile["level"], profile["days"], profile["minutes"], profile_id
+            profile["name"],
+            profile["subject"],
+            profile["goal"],
+            profile["level"],
+            profile["days"],
+            profile["minutes"],
+            profile_id
         ))
+
+
+def get_profiles():
+    with get_connection() as conn:
+        return conn.execute("""
+            SELECT id, name, subject, goal, level, days, daily_minutes
+            FROM profiles
+            ORDER BY id DESC
+        """).fetchall()
 
 
 def save_plan(profile_id, plan):
     with get_connection() as conn:
         conn.execute("""
-            INSERT INTO learning_plans (profile_id, plan_json, created_at)
+            INSERT INTO plans (profile_id, plan_json, created_at)
             VALUES (?, ?, ?)
         """, (
-            profile_id, json.dumps(plan, ensure_ascii=False),
+            profile_id,
+            json.dumps(plan, ensure_ascii=False),
             datetime.now().isoformat(timespec="seconds")
         ))
 
 
-def save_attempt(profile_id, subject, topic, score, total, wrong_topics):
+def get_latest_plan(profile_id):
+    with get_connection() as conn:
+        row = conn.execute("""
+            SELECT plan_json
+            FROM plans
+            WHERE profile_id=?
+            ORDER BY id DESC
+            LIMIT 1
+        """, (profile_id,)).fetchone()
+
+    if row:
+        try:
+            return json.loads(row[0])
+        except (json.JSONDecodeError, TypeError):
+            return None
+
+    return None
+
+
+def save_quiz_attempt(profile_id, subject, topic, score, total, wrong_topics):
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO quiz_attempts
-            (profile_id, subject, topic, score, total_questions, wrong_topics, created_at)
+            (profile_id, subject, topic, score, total, wrong_topics, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
-            profile_id, subject, topic, score, total,
-            json.dumps(wrong_topics, ensure_ascii=False),
+            profile_id,
+            subject,
+            topic,
+            score,
+            total,
+            json.dumps(wrong_topics),
             datetime.now().isoformat(timespec="seconds")
         ))
 
 
 def update_topic_progress(profile_id, topic, score, total):
-    # A single short quiz is not treated as proof of mastery.
-    percentage = round((score / total) * 100) if total else 0
-    status = "Needs revision" if percentage < 60 else "In progress"
+    percentage = (score / total) * 100 if total else 0
+
+    if percentage < 60:
+        status = "Needs revision"
+    else:
+        status = "In progress"
+
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO topic_progress
-            (profile_id, topic, status, last_score, total_questions, updated_at)
+            (profile_id, topic, status, score, total, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(profile_id, topic) DO UPDATE SET
+            ON CONFLICT(profile_id, topic)
+            DO UPDATE SET
                 status=excluded.status,
-                last_score=excluded.last_score,
-                total_questions=excluded.total_questions,
+                score=excluded.score,
+                total=excluded.total,
                 updated_at=excluded.updated_at
         """, (
-            profile_id, topic, status, score, total,
+            profile_id,
+            topic,
+            status,
+            score,
+            total,
             datetime.now().isoformat(timespec="seconds")
         ))
 
 
-def set_topic_completed(profile_id, topic):
+def mark_topic_completed(profile_id, topic):
     with get_connection() as conn:
         conn.execute("""
             INSERT INTO topic_progress
             (profile_id, topic, status, updated_at)
             VALUES (?, ?, 'Completed', ?)
-            ON CONFLICT(profile_id, topic) DO UPDATE SET
-                status='Completed', updated_at=excluded.updated_at
-        """, (profile_id, topic, datetime.now().isoformat(timespec="seconds")))
+            ON CONFLICT(profile_id, topic)
+            DO UPDATE SET
+                status='Completed',
+                updated_at=excluded.updated_at
+        """, (
+            profile_id,
+            topic,
+            datetime.now().isoformat(timespec="seconds")
+        ))
 
 
-def load_profiles():
+def get_topic_progress(profile_id):
     with get_connection() as conn:
         return conn.execute("""
-            SELECT id, learner_name, subject, learning_goal,
-                   skill_level, target_days, daily_minutes, created_at
-            FROM learner_profiles ORDER BY id DESC
-        """).fetchall()
-
-
-def load_plans(profile_id):
-    with get_connection() as conn:
-        return conn.execute("""
-            SELECT id, plan_json, created_at FROM learning_plans
-            WHERE profile_id=? ORDER BY id DESC
+            SELECT topic, status, score, total, updated_at
+            FROM topic_progress
+            WHERE profile_id=?
+            ORDER BY topic
         """, (profile_id,)).fetchall()
 
 
-def load_attempts(profile_id):
+def get_quiz_attempts(profile_id):
     with get_connection() as conn:
         return conn.execute("""
-            SELECT subject, topic, score, total_questions, wrong_topics, created_at
-            FROM quiz_attempts WHERE profile_id=? ORDER BY id DESC
+            SELECT subject, topic, score, total, wrong_topics, created_at
+            FROM quiz_attempts
+            WHERE profile_id=?
+            ORDER BY id DESC
         """, (profile_id,)).fetchall()
 
 
-def load_topic_progress(profile_id):
-    with get_connection() as conn:
-        return conn.execute("""
-            SELECT topic, status, last_score, total_questions, updated_at
-            FROM topic_progress WHERE profile_id=? ORDER BY topic
-        """, (profile_id,)).fetchall()
-
-
-def load_latest_plan(profile_id):
-    plans = load_plans(profile_id)
-    if not plans:
-        return None
-    try:
-        return json.loads(plans[0][1])
-    except (json.JSONDecodeError, TypeError):
-        return None
-
-
-def profile_from_row(row):
-    return {
-        "name": row[1],
-        "subject": row[2],
-        "goal": row[3],
-        "level": row[4],
-        "days": int(row[5]),
-        "minutes": int(row[6])
-    }
-    # ============================================================
-# AI STUDY PLAN GENERATION AND VALIDATION
-# ============================================================
-
-def validate_plan(plan, expected_days, daily_minutes):
-    if not isinstance(plan, dict) or not isinstance(plan.get("days"), list):
-        raise ValueError("The AI did not return a valid day-wise plan.")
-    if len(plan["days"]) != expected_days:
-        raise ValueError(
-            f"The AI returned {len(plan['days'])} days instead of {expected_days}. "
-            "Please generate the plan again."
-        )
-
-    required_text_fields = ["topic", "practice_task", "revision"]
-    for index, day in enumerate(plan["days"], start=1):
-        if not isinstance(day, dict):
-            raise ValueError(f"Day {index} has an invalid format.")
-        for field in required_text_fields:
-            if not isinstance(day.get(field), str) or not day[field].strip():
-                raise ValueError(f"Day {index} is missing {field}.")
-        for field in ["objectives", "activities"]:
-            if not isinstance(day.get(field), list) or not day[field]:
-                raise ValueError(f"Day {index} is missing {field}.")
-        try:
-            estimated = int(day.get("estimated_minutes", 0))
-        except (TypeError, ValueError):
-            estimated = 0
-        if estimated <= 0 or estimated > daily_minutes:
-            raise ValueError(
-                f"Day {index} has an invalid estimated time. "
-                "The plan must fit the daily study schedule."
-            )
-        day["day"] = index
-        day["estimated_minutes"] = estimated
-    plan.setdefault("overview", "Your personalized learning journey.")
-    return plan
-
+# =========================================================
+# 3. STUDY PLAN GENERATION
+# =========================================================
 
 def generate_study_plan(profile):
     prompt = f"""
-Create a personalized day-wise learning plan as valid JSON.
+Create a personalized study plan as valid JSON.
 
 Learner: {profile['name']}
 Subject: {profile['subject']}
 Goal: {profile['goal']}
-Current level: {profile['level']}
+Level: {profile['level']}
 Duration: exactly {profile['days']} days
-Available daily study time: {profile['minutes']} minutes
+Daily available time: {profile['minutes']} minutes
 
-Return this exact JSON structure:
+Return this structure:
+
 {{
-  "overview": "Short description",
+  "overview": "Short description of the learning plan",
   "days": [
     {{
       "day": 1,
@@ -348,39 +355,83 @@ Return this exact JSON structure:
       "objectives": ["Objective 1", "Objective 2"],
       "estimated_minutes": 45,
       "activities": ["Activity 1", "Activity 2"],
-      "practice_task": "Practical task",
+      "practice_task": "Practice task",
       "revision": "Revision activity"
     }}
   ]
 }}
 
 Rules:
-- Return exactly {profile['days']} day entries.
-- estimated_minutes must be a whole number greater than zero and no more than {profile['minutes']}.
-- The estimated time is the total time for that day's learning.
-- Include realistic activities and a practice task every day.
-- Progress from the learner's current level toward the stated goal.
-- Use clear, beginner-friendly language where appropriate.
-- Do not claim the learner has mastered a topic.
-- Return valid JSON only, with no markdown fences.
+1. Return exactly {profile['days']} days.
+2. Estimated minutes must not exceed {profile['minutes']}.
+3. Include learning objectives.
+4. Include activities and a practice task.
+5. Arrange topics in a logical learning order.
+6. Use simple language.
+7. Return JSON only.
 """
-    plan = extract_json(ask_ai(prompt))
-    return validate_plan(plan, profile["days"], profile["minutes"])
+
+    data = extract_json(ask_ai(prompt))
+
+    if not isinstance(data, dict):
+        raise ValueError("Invalid study plan format.")
+
+    days = data.get("days")
+
+    if not isinstance(days, list) or len(days) != profile["days"]:
+        raise ValueError("The AI did not return the requested number of days.")
+
+    for index, day in enumerate(days, start=1):
+
+        required = [
+            "topic",
+            "objectives",
+            "activities",
+            "practice_task",
+            "revision",
+            "estimated_minutes"
+        ]
+
+        for field in required:
+            if field not in day:
+                raise ValueError(f"Day {index} is missing {field}.")
+
+        if not isinstance(day["topic"], str) or not day["topic"].strip():
+            raise ValueError(f"Day {index} has an invalid topic.")
+
+        if not isinstance(day["objectives"], list):
+            raise ValueError(f"Day {index} has invalid objectives.")
+
+        if not isinstance(day["activities"], list):
+            raise ValueError(f"Day {index} has invalid activities.")
+
+        minutes = int(day["estimated_minutes"])
+
+        if minutes <= 0 or minutes > profile["minutes"]:
+            raise ValueError(f"Day {index} has an invalid time estimate.")
+
+        day["day"] = index
+        day["estimated_minutes"] = minutes
+
+    data.setdefault("overview", "Your personalized learning journey.")
+
+    return data
 
 
-# ============================================================
-# AI QUIZ GENERATION AND VALIDATION
-# ============================================================
+# =========================================================
+# 4. QUIZ GENERATION
+# =========================================================
 
 def generate_quiz(subject, topic, level):
     prompt = f"""
-Create exactly five multiple-choice questions as valid JSON.
+Create exactly 5 multiple-choice questions.
 
 Subject: {subject}
 Topic: {topic}
-Learner level: {level}
+Level: {level}
 
-Use this format:
+Return valid JSON:
+
 {{
   "questions": [
     {{
@@ -392,168 +443,237 @@ Use this format:
         "D": "Option D"
       }},
       "answer": "A",
-      "explanation": "Explain why the answer is correct",
-      "topic": "Specific concept tested"
+      "explanation": "Explanation of the correct answer",
+      "topic": "Concept tested"
     }}
   ]
 }}
 
 Rules:
-- Create exactly five questions.
-- Every question must have four non-empty, distinct options A, B, C, D.
-- answer must be exactly A, B, C, or D.
-- Include a useful explanation and a specific concept for each question.
-- Keep every question relevant to the subject, topic, and level.
-- Return JSON only, without markdown fences.
+- Exactly 5 questions.
+- Four options for every question.
+- Only one correct answer.
+- Answer must be A, B, C, or D.
+- Include explanations.
+- Keep questions related to the given topic.
+- Return JSON only.
 """
-    data = extract_json(ask_ai(prompt))
-    questions = data.get("questions") if isinstance(data, dict) else None
-    if not isinstance(questions, list) or len(questions) != 5:
-        raise ValueError("The AI did not generate exactly five questions.")
 
-    for number, question in enumerate(questions, start=1):
-        if not isinstance(question, dict):
-            raise ValueError(f"Question {number} has an invalid format.")
+    data = extract_json(ask_ai(prompt))
+
+    questions = data.get("questions")
+
+    if not isinstance(questions, list) or len(questions) != 5:
+        raise ValueError("The AI did not generate five questions.")
+
+    for index, question in enumerate(questions, start=1):
+
         options = question.get("options")
+
         if not isinstance(options, dict):
-            raise ValueError(f"Question {number} is missing options.")
-        keys = ["A", "B", "C", "D"]
-        if not all(isinstance(options.get(k), str) and options[k].strip() for k in keys):
-            raise ValueError(f"Question {number} must contain four complete options.")
-        if len({options[k].strip().casefold() for k in keys}) != 4:
-            raise ValueError(f"Question {number} contains duplicate options.")
-        if question.get("answer") not in keys:
-            raise ValueError(f"Question {number} has an invalid answer key.")
-        if not isinstance(question.get("question"), str) or not question["question"].strip():
-            raise ValueError(f"Question {number} has no question text.")
-        question.setdefault("explanation", "Review this concept and try again.")
+            raise ValueError(f"Question {index} has invalid options.")
+
+        for key in ["A", "B", "C", "D"]:
+            if not isinstance(options.get(key), str) or not options[key].strip():
+                raise ValueError(f"Question {index} is missing option {key}.")
+
+        if question.get("answer") not in ["A", "B", "C", "D"]:
+            raise ValueError(f"Question {index} has an invalid answer.")
+
+        if not question.get("question"):
+            raise ValueError(f"Question {index} is empty.")
+
+        question.setdefault("explanation", "Review this concept.")
         question.setdefault("topic", topic)
+
     return questions
 
 
-# ============================================================
-# SESSION STATE AND NAVIGATION
-# ============================================================
-
-def go_to_quiz():
-    st.session_state["navigation_page"] = "📝 Practice Quiz"
-
+# =========================================================
+# 5. SESSION STATE
+# =========================================================
 
 def clear_quiz():
     st.session_state.quiz_questions = None
-    st.session_state.quiz_submitted = False
     st.session_state.quiz_result = None
+    st.session_state.quiz_submitted = False
     st.session_state.quiz_topic = ""
 
 
-for key, default in {
+def load_profile(row):
+    st.session_state.profile_id = row[0]
+
+    st.session_state.profile = {
+        "name": row[1],
+        "subject": row[2],
+        "goal": row[3],
+        "level": row[4],
+        "days": row[5],
+        "minutes": row[6]
+    }
+
+    st.session_state.current_plan = get_latest_plan(row[0])
+
+    clear_quiz()
+
+
+defaults = {
     "profile_id": None,
     "profile": None,
     "current_plan": None,
     "quiz_questions": None,
-    "quiz_topic": "",
+    "quiz_result": None,
     "quiz_submitted": False,
-    "quiz_result": None
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
+    "quiz_topic": ""
+}
 
-initialize_database()
+for key, value in defaults.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+# =========================================================
+# 6. INITIALIZE APPLICATION
+# =========================================================
+
+try:
+    initialize_database()
+except sqlite3.Error as error:
+    st.error(f"Database initialization failed: {error}")
+    st.stop()
+
+
+# =========================================================
+# 7. SIDEBAR NAVIGATION
+# =========================================================
 
 st.sidebar.title("🎓 Learning Coach")
-st.sidebar.caption("Your personal AI-powered study companion")
+st.sidebar.write("Your AI-powered study companion")
+
 page = st.sidebar.radio(
-    "Navigate",
+    "Choose a page",
     [
-        "🏠 Home & Study Plan",
-        "📝 Practice Quiz",
-        "📊 Progress Dashboard"
-    ],
-    key="navigation_page"
+        "Home & Study Plan",
+        "Practice Quiz",
+        "Progress Dashboard"
+    ]
 )
+
 st.sidebar.divider()
 
-# Restore an existing saved profile after an app refresh/restart.
 try:
-    saved_profiles = load_profiles()
+    saved_profiles = get_profiles()
 except sqlite3.Error as error:
-    st.error(f"Could not read learner profiles from the database: {error}")
+    st.error(f"Could not load profiles: {error}")
     saved_profiles = []
 
 if saved_profiles:
-    labels = {
-        f"{row[1]} — {row[2]} (Profile {row[0]})": row
+
+    profile_labels = {
+        f"{row[1]} - {row[2]} (ID: {row[0]})": row
         for row in saved_profiles
     }
-    label_list = list(labels.keys())
-    current_label = next(
-        (label for label, row in labels.items()
-         if row[0] == st.session_state.profile_id),
-        label_list[0]
+
+    selected_label = st.sidebar.selectbox(
+        "Saved Learner Profiles",
+        list(profile_labels.keys())
     )
-    chosen_label = st.sidebar.selectbox(
-        "Load saved learner",
-        label_list,
-        index=label_list.index(current_label)
-    )
-    if st.sidebar.button("Load Selected Learner"):
-        chosen_row = labels[chosen_label]
-        st.session_state.profile_id = chosen_row[0]
-        st.session_state.profile = profile_from_row(chosen_row)
-        st.session_state.current_plan = load_latest_plan(chosen_row[0])
-        clear_quiz()
-        st.sidebar.success("Saved learner loaded.")
+
+    if st.sidebar.button("Load Profile"):
+
+        selected_row = profile_labels[selected_label]
+
+        load_profile(selected_row)
+
+        st.sidebar.success("Profile loaded successfully.")
 
 if st.session_state.profile:
-    st.sidebar.success(f"Active learner: {st.session_state.profile['name']}")
+    st.sidebar.success(
+        f"Active learner: {st.session_state.profile['name']}"
+    )
 else:
-    st.sidebar.info("Create or load a learner profile to get started.")
+    st.sidebar.info("Create a learner profile to begin.")
 
 
-# ============================================================
-# HOME AND STUDY PLAN
-# ============================================================
+# =========================================================
+# 8. HOME AND STUDY PLAN PAGE
+# =========================================================
 
-if page == "🏠 Home & Study Plan":
+if page == "Home & Study Plan":
+
     st.title("🎓 AI Personalized Learning Coach")
-        st.write(
-        "Create a personalized study plan, practise quizzes, understand "
-        "your mistakes, and track your learning progress."
+
+    st.write(
+        "Create your own personalized study plan, practise quizzes, "
+        "receive feedback, and track your learning progress."
     )
 
-    st.subheader("1. Set Up or Update Your Learning Profile")
+    st.divider()
+
+    st.subheader("Create Your Learning Profile")
+
     active = st.session_state.profile or {}
+
     with st.form("profile_form"):
-        name = st.text_input("Learner name", value=active.get("name", ""))
-        subject = st.text_input("Subject", value=active.get("subject", ""))
-        goal = st.text_area("Learning goal", value=active.get("goal", ""))
-        levels = ["Beginner", "Intermediate", "Advanced"]
-        default_level = active.get("level", "Beginner")
-        level = st.selectbox(
-            "Current skill level",
-            levels,
-            index=levels.index(default_level) if default_level in levels else 0
+
+        name = st.text_input(
+            "Learner Name",
+            value=active.get("name", "")
         )
+
+        subject = st.text_input(
+            "Subject",
+            value=active.get("subject", "")
+        )
+
+        goal = st.text_area(
+            "What is your learning goal?",
+            value=active.get("goal", "")
+        )
+
+        levels = ["Beginner", "Intermediate", "Advanced"]
+
+        current_level = active.get("level", "Beginner")
+
+        level = st.selectbox(
+            "Current Skill Level",
+            levels,
+            index=levels.index(current_level)
+            if current_level in levels else 0
+        )
+
         col1, col2 = st.columns(2)
+
         with col1:
             days = st.number_input(
-                "Target duration (days)", min_value=1, max_value=90,
+                "Target Duration (Days)",
+                min_value=1,
+                max_value=90,
                 value=int(active.get("days", 7))
             )
+
         with col2:
             minutes = st.number_input(
-                "Daily study time (minutes)", min_value=10, max_value=480,
-                value=int(active.get("minutes", 60)), step=5
+                "Daily Study Time (Minutes)",
+                min_value=10,
+                max_value=480,
+                value=int(active.get("minutes", 60)),
+                step=5
             )
-        submitted = st.form_submit_button(
-            "Create / Update and Generate Study Plan",
+
+        generate_button = st.form_submit_button(
+            "Generate My Study Plan",
             type="primary"
         )
 
-    if submitted:
+    if generate_button:
+
         if not name.strip() or not subject.strip() or not goal.strip():
-            st.error("Please complete your name, subject, and learning goal.")
+
+            st.error("Please fill in all the profile details.")
+
         else:
+
             profile = {
                 "name": name.strip(),
                 "subject": subject.strip(),
@@ -562,201 +682,296 @@ if page == "🏠 Home & Study Plan":
                 "days": int(days),
                 "minutes": int(minutes)
             }
-            with st.spinner("Creating your personalized study plan..."):
+
+            with st.spinner("Generating your personalized study plan..."):
+
                 try:
+
                     plan = generate_study_plan(profile)
+
                     if st.session_state.profile_id:
-                        update_profile(st.session_state.profile_id, profile)
+
                         profile_id = st.session_state.profile_id
+
+                        update_profile(profile_id, profile)
+
                     else:
-                        profile_id = save_profile(
-                            profile["name"], profile["subject"], profile["goal"],
-                            profile["level"], profile["days"], profile["minutes"]
-                        )
+
+                        profile_id = save_profile(profile)
+
                     save_plan(profile_id, plan)
-                    st.session_state.profile = profile
+
                     st.session_state.profile_id = profile_id
+                    st.session_state.profile = profile
                     st.session_state.current_plan = plan
+
                     clear_quiz()
-                    st.success("Your study plan has been saved successfully.")
-                except (sqlite3.Error, ValueError, RuntimeError, Exception) as error:
-                    st.error(f"Could not create or save the study plan: {error}")
-                    st.info(
-                        "Check your internet connection and Groq API key, then "
-                        "try again. Your previous saved plan is not intentionally deleted."
-                    )
+
+                    st.success("Your study plan has been generated and saved!")
+
+                except Exception as error:
+
+                    st.error(f"Could not generate your study plan: {error}")
+
+    # Display the saved study plan
 
     if st.session_state.profile and st.session_state.current_plan:
+
         profile = st.session_state.profile
         plan = st.session_state.current_plan
+
         st.divider()
-        st.subheader("2. Your Personalized Learning Plan")
+
+        st.subheader("Your Personalized Study Plan")
+
         st.write(f"**Learner:** {profile['name']}")
         st.write(f"**Subject:** {profile['subject']}")
         st.write(f"**Goal:** {profile['goal']}")
         st.write(f"**Level:** {profile['level']}")
-        st.write(
-            f"**Schedule:** {profile['days']} days · "
-            f"{profile['minutes']} minutes per day"
-        )
-        st.info(plan.get("overview", "Your learning journey starts here."))
+
+        st.info(plan.get("overview", "Your learning journey begins here."))
 
         try:
-            progress_rows = load_topic_progress(st.session_state.profile_id)
-            progress_map = {row[0]: row[1] for row in progress_rows}
+            progress_rows = get_topic_progress(st.session_state.profile_id)
+            progress_map = {
+                row[0]: row[1]
+                for row in progress_rows
+            }
         except sqlite3.Error:
             progress_map = {}
 
-        for item in plan.get("days", []):
-            topic_name = item["topic"]
-            status = progress_map.get(topic_name, "Pending")
+        for day in plan["days"]:
+
+            topic = day["topic"]
+            status = progress_map.get(topic, "Pending")
+
             with st.expander(
-                f"Day {item['day']}: {topic_name} — {status}"
+                f"Day {day['day']}: {topic} - {status}"
             ):
-                st.write(f"**Estimated time:** {item['estimated_minutes']} minutes")
-                st.markdown("**Learning objectives**")
-                for objective in item["objectives"]:
+
+                st.write(
+                    f"**Estimated Time:** {day['estimated_minutes']} minutes"
+                )
+
+                st.markdown("**Learning Objectives**")
+
+                for objective in day["objectives"]:
                     st.write(f"- {objective}")
-                st.markdown("**Activities**")
-                for activity in item["activities"]:
+
+                st.markdown("**Learning Activities**")
+
+                for activity in day["activities"]:
                     st.write(f"- {activity}")
-                st.markdown("**Practice task**")
-                st.write(item["practice_task"])
-                st.markdown("**Revision**")
-                st.write(item["revision"])
+
+                st.markdown("**Practice Task**")
+                st.write(day["practice_task"])
+
+                st.markdown("**Revision Activity**")
+                st.write(day["revision"])
+
                 if status != "Completed":
+
                     if st.button(
-                        f"Mark '{topic_name}' as completed",
-                        key=f"complete_{st.session_state.profile_id}_{item['day']}"
+                        "Mark as Completed",
+                        key=f"complete_{day['day']}_{st.session_state.profile_id}"
                     ):
+
                         try:
-                            set_topic_completed(st.session_state.profile_id, topic_name)
-                            st.success(f"{topic_name} marked as completed.")
+                            mark_topic_completed(
+                                st.session_state.profile_id,
+                                topic
+                            )
+
+                            st.success("Topic marked as completed.")
+
                             st.rerun()
+
                         except sqlite3.Error as error:
-                            st.error(f"Could not update topic progress: {error}")
+                            st.error(f"Could not update progress: {error}")
 
         st.download_button(
-            "Download Study Plan (JSON)",
+            "Download Study Plan",
             data=json.dumps(plan, indent=2, ensure_ascii=False),
-            file_name="personalized_study_plan.json",
+            file_name="study_plan.json",
             mime="application/json"
         )
-        st.button("Start a Practice Quiz", type="primary", on_click=go_to_quiz)
 
-    elif st.session_state.profile and not st.session_state.current_plan:
-        st.info("No saved plan was found. Generate a new plan using the form above.")
+    elif st.session_state.profile:
+
+        st.info("Generate a study plan using the form above.")
 
 
-# ============================================================
-# PRACTICE QUIZ
-# ============================================================
+# =========================================================
+# 9. PRACTICE QUIZ PAGE
+# =========================================================
 
-elif page == "📝 Practice Quiz":
-    st.title("📝 Topic-Based Practice Quiz")
+elif page == "Practice Quiz":
+
+    st.title("📝 Practice Quiz")
+
     st.write(
-        "Choose a topic from your plan or enter another topic. "
-        "Python calculates your score using the AI-provided answer key."
+        "Test your knowledge with five AI-generated questions."
     )
 
     if not st.session_state.profile:
-        st.warning("Please create or load a learner profile first.")
-    else:
-        profile = st.session_state.profile
-        st.write(f"**Subject:** {profile['subject']} · **Level:** {profile['level']}")
 
-        plan_topics = []
-        if st.session_state.current_plan:
-            plan_topics = [
-                item.get("topic", "")
-                for item in st.session_state.current_plan.get("days", [])
-                if item.get("topic")
+        st.warning("Please create or load a learner profile first.")
+
+    else:
+
+        profile = st.session_state.profile
+
+        st.write(f"**Subject:** {profile['subject']}")
+        st.write(f"**Level:** {profile['level']}")
+
+        plan = st.session_state.current_plan
+
+        topics = []
+
+        if plan:
+
+            topics = [
+                day["topic"]
+                for day in plan.get("days", [])
             ]
 
-        if plan_topics:
-            selected_plan_topic = st.selectbox(
-                "Select a topic from your study plan",
-                ["Choose a planned topic"] + plan_topics
-            )
-        else:
-            selected_plan_topic = "Choose a planned topic"
+        if topics:
 
-        other_topic = st.text_input(
-            "Or enter another topic",
-            placeholder="Example: Python loops"
-        )
-        chosen_topic = (
-            other_topic.strip()
-            if other_topic.strip()
-            else (
-                selected_plan_topic
-                if selected_plan_topic != "Choose a planned topic"
-                else ""
+            selected_topic = st.selectbox(
+                "Choose a topic",
+                ["Select a topic"] + topics
             )
+
+        else:
+
+            selected_topic = "Select a topic"
+
+        custom_topic = st.text_input(
+            "Or enter another topic",
+            placeholder="Example: Python Functions"
         )
+
+        if custom_topic.strip():
+
+            topic = custom_topic.strip()
+
+        elif selected_topic != "Select a topic":
+
+            topic = selected_topic
+
+        else:
+
+            topic = ""
 
         if st.button("Generate 5 Questions", type="primary"):
-            if not chosen_topic:
-                st.warning("Please select or enter a topic first.")
+
+            if not topic:
+
+                st.warning("Please select or enter a topic.")
+
             else:
-                with st.spinner("Preparing your quiz..."):
+
+                with st.spinner("Generating your quiz..."):
+
                     try:
+
                         questions = generate_quiz(
-                            profile["subject"], chosen_topic, profile["level"]
+                            profile["subject"],
+                            topic,
+                            profile["level"]
                         )
+
                         st.session_state.quiz_questions = questions
-                        st.session_state.quiz_topic = chosen_topic
-                        st.session_state.quiz_submitted = False
+                        st.session_state.quiz_topic = topic
                         st.session_state.quiz_result = None
+                        st.session_state.quiz_submitted = False
+
                         st.rerun()
+
                     except Exception as error:
-                        st.error(f"Could not generate the quiz: {error}")
-                        st.info("Please check the API connection and try again.")
+
+                        st.error(f"Quiz generation failed: {error}")
 
         questions = st.session_state.quiz_questions
-        if questions:
-            st.divider()
-            st.subheader(f"Quiz: {st.session_state.quiz_topic}")
-            if not st.session_state.quiz_submitted:
-                with st.form("quiz_form"):
-                    answers = []
-                    for index, question in enumerate(questions):
-                        st.markdown(
-                            f"**Question {index + 1}: {question['question']}**"
-                        )
-                        options = question["options"]
-                        choice = st.radio(
-                            f"Choose your answer for Question {index + 1}",
-                            options=["A", "B", "C", "D"],
-                            format_func=lambda key, opts=options: f"{key}. {opts[key]}",
-                            key=f"answer_{index}"
-                        )
-                        answers.append(choice)
-                    quiz_submit = st.form_submit_button("Submit Quiz", type="primary")
 
-                if quiz_submit:
+        if questions:
+
+            st.divider()
+
+            st.subheader(
+                f"Quiz: {st.session_state.quiz_topic}"
+            )
+
+            if not st.session_state.quiz_submitted:
+
+                with st.form("quiz_form"):
+
+                    answers = []
+
+                    for index, question in enumerate(questions):
+
+                        st.markdown(
+                            f"**Question {index + 1}: "
+                            f"{question['question']}**"
+                        )
+
+                        options = question["options"]
+
+                        answer = st.radio(
+                            f"Select your answer for Question {index + 1}",
+                            ["A", "B", "C", "D"],
+                            format_func=lambda key, opts=options: (
+                                f"{key}. {opts[key]}"
+                            ),
+                            key=f"question_{index}"
+                        )
+
+                        answers.append(answer)
+
+                    submit_quiz = st.form_submit_button(
+                        "Submit Quiz",
+                        type="primary"
+                    )
+
+                if submit_quiz:
+
                     score = 0
                     wrong_topics = []
                     results = []
+
                     for index, question in enumerate(questions):
+
                         selected = answers[index]
                         correct = question["answer"]
+
                         is_correct = selected == correct
+
                         if is_correct:
                             score += 1
                         else:
-                            wrong_topics.append(question.get("topic", st.session_state.quiz_topic))
+                            wrong_topics.append(
+                                question.get(
+                                    "topic",
+                                    st.session_state.quiz_topic
+                                )
+                            )
+
                         results.append({
                             "question": question["question"],
                             "selected": selected,
                             "correct": correct,
                             "options": question["options"],
                             "is_correct": is_correct,
-                            "explanation": question.get("explanation", ""),
-                            "topic": question.get("topic", st.session_state.quiz_topic)
+                            "explanation": question["explanation"],
+                            "topic": question.get(
+                                "topic",
+                                st.session_state.quiz_topic
+                            )
                         })
-                                            try:
-                        save_attempt(
+
+                    try:
+
+                        save_quiz_attempt(
                             st.session_state.profile_id,
                             profile["subject"],
                             st.session_state.quiz_topic,
@@ -764,14 +979,17 @@ elif page == "📝 Practice Quiz":
                             len(questions),
                             wrong_topics
                         )
+
                         update_topic_progress(
                             st.session_state.profile_id,
                             st.session_state.quiz_topic,
                             score,
                             len(questions)
                         )
+
                     except sqlite3.Error as error:
-                        st.error(f"Your result was calculated but could not be saved: {error}")
+
+                        st.error(f"Could not save quiz results: {error}")
                         st.stop()
 
                     st.session_state.quiz_result = {
@@ -780,218 +998,433 @@ elif page == "📝 Practice Quiz":
                         "results": results,
                         "wrong_topics": wrong_topics
                     }
+
                     st.session_state.quiz_submitted = True
+
                     st.rerun()
 
-            if st.session_state.quiz_submitted and st.session_state.quiz_result:
+            # Display quiz results
+
+            if st.session_state.quiz_submitted:
+
                 result = st.session_state.quiz_result
+
                 score = result["score"]
                 total = result["total"]
-                percentage = round((score / total) * 100) if total else 0
+
+                percentage = round((score / total) * 100)
+
                 st.subheader("Your Quiz Results")
-                st.metric("Score", f"{score}/{total}")
+
+                col1, col2 = st.columns(2)
+
+                col1.metric("Your Score", f"{score}/{total}")
+                col2.metric("Accuracy", f"{percentage}%")
+
                 st.progress(percentage / 100)
-                st.write(f"**Accuracy:** {percentage}%")
 
                 if percentage >= 80:
-                    st.success(
-                        "Strong result on this attempt. Continue practising and "
-                        "try the next topic; this short quiz alone does not prove mastery."
-                    )
-                elif percentage >= 60:
-                    st.info("Good effort. Review the explanations and practise again.")
-                else:
-                    st.warning("This topic needs more revision before moving forward.")
 
-                st.subheader("Answer Review")
+                    st.success(
+                        "Good performance! Continue practising "
+                        "and try the next topic."
+                    )
+
+                elif percentage >= 60:
+
+                    st.info(
+                        "Good effort! Review the explanations "
+                        "and practise again."
+                    )
+
+                else:
+
+                    st.warning(
+                        "This topic needs more revision. "
+                        "Review the concepts before trying again."
+                    )
+
+                st.divider()
+
+                st.subheader("Answer Explanations")
+
                 for index, item in enumerate(result["results"]):
-                    status = "Correct" if item["is_correct"] else "Needs review"
-                    with st.expander(f"Question {index + 1}: {status}"):
+
+                    with st.expander(
+                        f"Question {index + 1}"
+                    ):
+
                         st.write(item["question"])
+
                         st.write(
-                            f"**Your answer:** {item['selected']}. "
+                            f"**Your Answer:** {item['selected']}. "
                             f"{item['options'][item['selected']]}"
                         )
+
                         st.write(
-                            f"**Correct answer:** {item['correct']}. "
+                            f"**Correct Answer:** {item['correct']}. "
                             f"{item['options'][item['correct']]}"
                         )
-                        st.write(f"**Explanation:** {item['explanation']}")
-                        st.write(f"**Concept:** {item['topic']}")
 
-                st.subheader("Personalized Next Steps")
+                        st.write(
+                            f"**Explanation:** {item['explanation']}"
+                        )
+
+                        st.write(
+                            f"**Concept:** {item['topic']}"
+                        )
+
+                        if item["is_correct"]:
+                            st.success("Correct answer!")
+                        else:
+                            st.error("Review this concept.")
+
+                st.divider()
+
+                st.subheader("Personalized Recommendations")
+
                 if result["wrong_topics"]:
-                    st.write("**Recommended revision topics:**")
-                    for weak in sorted(set(result["wrong_topics"])):
-                        st.write(f"- {weak}")
-                    st.write("Revise these concepts, then attempt another quiz.")
+
+                    st.write("Topics recommended for revision:")
+
+                    for weak_topic in sorted(
+                        set(result["wrong_topics"])
+                    ):
+                        st.write(f"- {weak_topic}")
+
+                    st.info(
+                        "Revise these topics and take another quiz."
+                    )
+
                 else:
-                    st.write("You answered all questions correctly in this attempt.")
-                    if st.session_state.current_plan:
-                        topics = [
-                            item["topic"]
-                            for item in st.session_state.current_plan.get("days", [])
+
+                    st.success(
+                        "You answered all five questions correctly "
+                        "in this attempt."
+                    )
+
+                    if plan:
+
+                        plan_topics = [
+                            day["topic"]
+                            for day in plan.get("days", [])
                         ]
+
                         current_index = next(
-                            (i for i, value in enumerate(topics)
-                             if value.casefold() == st.session_state.quiz_topic.casefold()),
+                            (
+                                index
+                                for index, value in enumerate(plan_topics)
+                                if value.lower() ==
+                                st.session_state.quiz_topic.lower()
+                            ),
                             None
                         )
-                        if current_index is not None and current_index + 1 < len(topics):
-                            st.write(f"**Suggested next topic:** {topics[current_index + 1]}")
-                        else:
-                            st.write("Try a more advanced practice topic related to your goal.")
+
+                        if (
+                            current_index is not None
+                            and current_index + 1 < len(plan_topics)
+                        ):
+
+                            st.write(
+                                "**Suggested Next Topic:** "
+                                f"{plan_topics[current_index + 1]}"
+                            )
 
                 if st.button("Try Another Quiz"):
+
                     clear_quiz()
+
                     st.rerun()
 
 
-# ============================================================
-# PROGRESS DASHBOARD
-# ============================================================
+# =========================================================
+# 10. PROGRESS DASHBOARD
+# =========================================================
 
-elif page == "📊 Progress Dashboard":
+elif page == "Progress Dashboard":
+
     st.title("📊 Learning Progress Dashboard")
-    st.write("Review saved plans, completed topics, quiz scores, and next actions.")
+
+    st.write(
+        "View your study progress, quiz performance, "
+        "completed topics, and revision recommendations."
+    )
 
     try:
-        profiles = load_profiles()
+        profiles = get_profiles()
     except sqlite3.Error as error:
-        st.error(f"Could not load learner profiles: {error}")
+        st.error(f"Could not load profiles: {error}")
         profiles = []
 
     if not profiles:
-        st.info("No learner profiles found. Create a study plan on the Home page.")
+
+        st.info("Create a learner profile to view your dashboard.")
+
     else:
+
         profile_options = {
-            f"{row[1]} — {row[2]} (Profile {row[0]})": row[0]
+            f"{row[1]} - {row[2]} (ID: {row[0]})": row
             for row in profiles
         }
-        selected_label = st.selectbox(
-            "Choose a learner profile", list(profile_options.keys())
-        )
-        selected_id = profile_options[selected_label]
-        selected_profile_row = next(row for row in profiles if row[0] == selected_id)
-        selected_profile = profile_from_row(selected_profile_row)
 
-        # Load selected profile into session so the learner can continue after refresh.
-        if st.button("Use This Profile for Practice"):
-            st.session_state.profile_id = selected_id
-            st.session_state.profile = selected_profile
-            st.session_state.current_plan = load_latest_plan(selected_id)
-            clear_quiz()
-            st.success("Profile loaded. Open Practice Quiz to continue.")
+        selected_label = st.selectbox(
+            "Select Learner",
+            list(profile_options.keys())
+        )
+
+        selected_profile = profile_options[selected_label]
+        selected_id = selected_profile[0]
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("Target Days", selected_profile["days"])
-        col2.metric("Daily Study Time", f"{selected_profile['minutes']} min")
-        col3.metric("Current Level", selected_profile["level"])
-        st.write(f"**Learning goal:** {selected_profile['goal']}")
+
+        col1.metric("Target Days", selected_profile[5])
+
+        col2.metric(
+            "Daily Study Time",
+            f"{selected_profile[6]} minutes"
+        )
+
+        col3.metric("Skill Level", selected_profile[4])
+
+        st.write(f"**Learning Goal:** {selected_profile[3]}")
 
         try:
-            plans = load_plans(selected_id)
-            attempts = load_attempts(selected_id)
-            progress_rows = load_topic_progress(selected_id)
+
+            plan = get_latest_plan(selected_id)
+            progress = get_topic_progress(selected_id)
+            attempts = get_quiz_attempts(selected_id)
+
         except sqlite3.Error as error:
-            st.error(f"Could not load dashboard data: {error}")
-            plans, attempts, progress_rows = [], [], []
 
-        st.subheader("Topic Progress")
-        plan_for_dashboard = None
-        if plans:
-            try:
-                plan_for_dashboard = json.loads(plans[0][1])
-            except (json.JSONDecodeError, TypeError):
-                st.warning("The latest saved plan could not be read.")
+            st.error(f"Could not load dashboard information: {error}")
 
-        if plan_for_dashboard:
-            progress_map = {row[0]: row[1] for row in progress_rows}
-            topic_rows = []
-            for day_item in plan_for_dashboard.get("days", []):
-                topic_name = day_item.get("topic", "Topic")
-                topic_rows.append({
-                    "Day": day_item.get("day", ""),
+            plan = None
+            progress = []
+            attempts = []
+
+        # Topic progress
+
+        st.divider()
+
+        st.subheader("Topic Completion")
+
+        if plan:
+
+            progress_map = {
+                row[0]: row[1]
+                for row in progress
+            }
+
+            completed = 0
+            topic_data = []
+
+            for day in plan.get("days", []):
+
+                topic_name = day["topic"]
+
+                status = progress_map.get(
+                    topic_name,
+                    "Pending"
+                )
+
+                if status == "Completed":
+                    completed += 1
+
+                topic_data.append({
+                    "Day": day["day"],
                     "Topic": topic_name,
-                    "Status": progress_map.get(topic_name, "Pending")
+                    "Status": status
                 })
-            st.dataframe(topic_rows, use_container_width=True, hide_index=True)
-            completed_count = sum(1 for item in topic_rows if item["Status"] == "Completed")
-            pending_count = len(topic_rows) - completed_count
-            c1, c2 = st.columns(2)
-            c1.metric("Completed Topics", completed_count)
-            c2.metric("Pending / In-progress Topics", pending_count)
+
+            st.dataframe(
+                topic_data,
+                use_container_width=True,
+                hide_index=True
+            )
+
+            total_topics = len(topic_data)
+            pending = total_topics - completed
+
+            col1, col2 = st.columns(2)
+
+            col1.metric("Completed Topics", completed)
+            col2.metric("Remaining Topics", pending)
+
+            if total_topics:
+
+                completion_percentage = (
+                    completed / total_topics
+                )
+
+                st.progress(completion_percentage)
+
+                st.write(
+                    f"Overall topic completion: "
+                    f"{round(completion_percentage * 100)}%"
+                )
+
             next_topic = next(
-                (item["Topic"] for item in topic_rows
-                 if item["Status"] != "Completed"),
+                (
+                    item["Topic"]
+                    for item in topic_data
+                    if item["Status"] != "Completed"
+                ),
                 None
             )
+
             if next_topic:
-                st.info(f"**Next study action:** Continue with {next_topic}.")
+
+                st.info(
+                    f"**Next Study Action:** Continue with {next_topic}"
+                )
+
             else:
-                st.success("All topics in this plan are marked completed.")
+
+                st.success("All topics in this plan are completed.")
+
         else:
-            st.info("Generate a study plan to see topic completion status.")
+
+            st.info("Generate a study plan to see topic progress.")
+
+        # Quiz performance
+
+        st.divider()
 
         st.subheader("Quiz Performance")
+
         if attempts:
+
             total_quizzes = len(attempts)
-            total_questions = sum(row[3] for row in attempts)
-            total_correct = sum(row[2] for row in attempts)
-            accuracy = round((total_correct / total_questions) * 100) if total_questions else 0
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Quizzes Completed", total_quizzes)
-            c2.metric("Questions Answered", total_questions)
-            c3.metric("Overall Accuracy", f"{accuracy}%")
+
+            total_questions = sum(
+                row[3]
+                for row in attempts
+            )
+
+            total_correct = sum(
+                row[2]
+                for row in attempts
+            )
+
+            accuracy = (
+                round((total_correct / total_questions) * 100)
+                if total_questions else 0
+            )
+
+            col1, col2, col3 = st.columns(3)
+
+            col1.metric("Quizzes Completed", total_quizzes)
+
+            col2.metric(
+                "Questions Answered",
+                total_questions
+            )
+
+            col3.metric(
+                "Overall Accuracy",
+                f"{accuracy}%"
+            )
+
             st.progress(accuracy / 100)
 
-            st.markdown("### Recent Quiz Attempts")
-            for subject_name, topic_name, score, total, wrong_json, created_at in attempts[:10]:
-                with st.expander(f"{topic_name} — {score}/{total} ({created_at})"):
+            st.subheader("Recent Quiz Attempts")
+
+            for attempt in attempts[:10]:
+
+                subject_name = attempt[0]
+                topic_name = attempt[1]
+                score = attempt[2]
+                total = attempt[3]
+                wrong_json = attempt[4]
+                created_at = attempt[5]
+
+                with st.expander(
+                    f"{topic_name} - {score}/{total}"
+                ):
+
                     st.write(f"**Subject:** {subject_name}")
-                    st.write(f"**Score:** {score}/{total}")
+
+                    st.write(f"**Date:** {created_at}")
+
                     try:
                         weak_topics = json.loads(wrong_json)
                     except (json.JSONDecodeError, TypeError):
                         weak_topics = []
+
                     if weak_topics:
-                        st.write("**Concepts to review:**")
+
+                        st.write("**Topics to revise:**")
+
                         for weak in sorted(set(weak_topics)):
                             st.write(f"- {weak}")
+
                     else:
+
                         st.write("No incorrect answers in this attempt.")
 
-            chart_rows = [
-                {
-                    "Quiz": f"{row[1]} ({index + 1})",
-                    "Accuracy (%)": round((row[2] / row[3]) * 100) if row[3] else 0
-                }
-                for index, row in enumerate(reversed(attempts))
-            ]
-            st.markdown("### Quiz Accuracy Over Time")
-            st.line_chart(chart_rows, x="Quiz", y="Accuracy (%)")
+            chart_data = []
+
+            for index, attempt in enumerate(reversed(attempts)):
+
+                score = attempt[2]
+                total = attempt[3]
+
+                percentage = (
+                    round((score / total) * 100)
+                    if total else 0
+                )
+
+                chart_data.append({
+                    "Attempt": f"Quiz {index + 1}",
+                    "Accuracy": percentage
+                })
+
+            st.subheader("Quiz Accuracy History")
+
+            st.line_chart(
+                chart_data,
+                x="Attempt",
+                y="Accuracy"
+            )
+
         else:
-            st.info("Complete a practice quiz to see your score history.")
 
-        if progress_rows:
-            st.subheader("Topics Needing Revision")
-            revision_topics = [row[0] for row in progress_rows if row[1] == "Needs revision"]
-            if revision_topics:
-                for topic_name in revision_topics:
-                    st.write(f"- {topic_name}")
-            else:
-                st.write("No topics are currently flagged for revision.")
+            st.info("Complete a quiz to see your performance history.")
+
+        # Revision recommendations
+
+        st.divider()
+
+        st.subheader("Topics Needing Revision")
+
+        revision_topics = [
+            row[0]
+            for row in progress
+            if row[1] == "Needs revision"
+        ]
+
+        if revision_topics:
+
+            for topic in revision_topics:
+                st.write(f"- {topic}")
+
+        else:
+
+            st.write("No topics are currently flagged for revision.")
 
 
-# ============================================================
-# FOOTER
-# ============================================================
+# =========================================================
+# 11. FOOTER
+# =========================================================
 
 st.divider()
+
 st.caption(
-    "AI Personalized Learning Coach | Python • Streamlit • Groq API • SQLite"
+    "AI Personalized Learning Coach | "
+    "Python | Streamlit | Groq API | SQLite"
 )
+
 st.caption(
     "AI-generated educational content may contain errors. "
-    "Quiz results are learning signals, not proof of mastery."
+    "Use explanations and revision activities to support your learning."
 )
